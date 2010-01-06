@@ -1,19 +1,22 @@
 require 'rubygems'
-require 'tinder'
 require 'rio'
 require 'hpricot'
 require 'ostruct'
 require 'time'
 require 'htmlentities'
 require 'digest/sha1'
+require "campfire"
 
 class Twitter2Campfire
   attr_accessor :feed, :campfire, :room, :cachefile, :options
   
-  def initialize(feed,campfire,room, cachefile = 'archived_latest.txt', options = {})
+  def initialize(feed, campfire_url, campfire_api_token, campfire_room, cachefile = 'archived_latest.txt', options = {})
+    Campfire.base_uri campfire_url
+    Campfire.basic_auth campfire_api_token, 'x'
+    campfire_room_id = Campfire.rooms.find {|room| room['name'] === campfire_room}["id"]
+    
+    self.room = Campfire.room(campfire_room_id)
     self.feed = feed
-    self.campfire = campfire
-    self.room = campfire.find_room_by_name room
     self.cachefile = cachefile
     self.options = options
   end
@@ -39,9 +42,9 @@ class Twitter2Campfire
     entries.first
   end
   
-  def save_latest
+  def save_latest(last_checksum_index = -1)
     f = File.exist?(cachefile)? File.open(cachefile, 'a') : File.new(cachefile, 'w')
-    f.write("\n#{new_archive_contents}")
+    f.write("\n#{new_archive_contents(last_checksum_index)}")
   end
   
   def checksums
@@ -64,8 +67,8 @@ class Twitter2Campfire
     end
   end
   
-  def new_archive_contents
-    "#{new_checksums.join("\n")}"
+  def new_archive_contents(last_checksum_index = -1)
+    "#{new_checksums[0..(new_checksums.size - last_checksum_index + 1)].join("\n")}"
   end
   
   def posts
@@ -77,11 +80,16 @@ class Twitter2Campfire
   end
   
   def publish_entries
-    posts.reverse.each do |post|
-      if options[:twicture]
-        room.speak post.twicture
-      else
-        room.speak "#{coder.decode(post.from)}: #{coder.decode(post.text)} #{post.link}"
+    posts.reverse.each_with_index do |post, index|
+      begin
+        if options[:twicture]
+          room.message post.twicture
+        else
+          room.message "#{coder.decode(post.from)}: #{coder.decode(post.text)} #{post.link}"
+        end
+      rescue Timeout::Error
+        save_latest(posts.size - index)
+        exit(1)
       end
     end
     save_latest
